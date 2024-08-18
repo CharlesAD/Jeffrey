@@ -21,9 +21,6 @@ const client = new Client({
     'partials': [Partials.Channel]
 });
 
-
-
-
 // Logs message to console
 client.on("ready", () =>{
     console.log("The AI bot is online"); //message when bot is online
