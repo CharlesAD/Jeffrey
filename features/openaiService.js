@@ -10,7 +10,7 @@ module.exports.getOpenAIResponse = async (userMessage, maxTokens = 1000) => {
   log.push({ role: "user", content: userMessage });
   const completion = await openai.chat.completions.create({
     messages: log,
-    model: "gpt-3.5-turbo",
+    model: "gpt-4o",
     max_tokens: maxTokens,
   });
   const response = completion.choices[0].message.content;
