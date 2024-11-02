@@ -18,12 +18,14 @@ module.exports = async function handleGeneralQuestion(message) {
 
     collector.on('collect', async (interaction) => {
       if (interaction.customId === "yes_private_help") {
-        await interaction.deferReply({ ephemeral: true });
-        const response = await getOpenAIResponse(message.content, 300);
-        await message.author.send(response);
-        await interaction.editReply({ content: "I've sent you a private response." });
-      } else if (interaction.customId === "no_private_help") {
-        await interaction.reply({ content: "Okay, no private help will be provided.", ephemeral: true });
+          await interaction.deferReply({ ephemeral: true });
+          const response = await getOpenAIResponse(message.content, 300);
+          //await message.author.send(response);
+          await interaction.user.send(response);
+          await interaction.editReply({ content: "I've sent you a private response." });
+        } 
+        else if (interaction.customId === "no_private_help") {
+          await interaction.reply({ content: "Okay, no private help will be provided.", ephemeral: true });
       }
     });
   }
