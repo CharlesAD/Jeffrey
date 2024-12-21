@@ -16,6 +16,7 @@ const client = new Client({
 const handleCodeReview = require('./features/codeReview');
 const handleDMResponse = require('./features/dmResponse');
 const handleGeneralQuestion = require('./features/generalQuestion');
+const handlePoll = require('./features/createPoll');
 
 client.on("ready", () => {
   console.log("The AI bot is online");
@@ -28,6 +29,7 @@ client.on("messageCreate", async (message) => {
   await handleCodeReview(message);
   await handleDMResponse(message);
   await handleGeneralQuestion(message);
+  await handlePoll(message);
 });
 
 client.login(ACCESS_TOKEN_DISCORD);
