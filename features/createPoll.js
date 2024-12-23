@@ -30,5 +30,31 @@ module.exports = async function handlePoll(message) {
       content: `**${question}**\nSelect your answer to the question!`,
       components: [row],
     });
+
+    // Collect button interactions
+    const collector = pollMessage.createMessageComponentCollector({ time: 20000 }); // 1 minute
+    const votes = Array(options.length).fill(0); // Initialize votes for each option
+
+    collector.on('collect', async (interaction) => {
+      if (interaction.customId.startsWith('poll_option_')) {
+        const optionIndex = parseInt(interaction.customId.split('_')[2]);
+        votes[optionIndex]++;
+
+        interaction.reply({
+          content: `You voted for: **${options[optionIndex]}**`,
+          ephemeral: true, // Only the user who clicked the button sees this reply
+        });
+      }
+    });
+
+    collector.on('end', () => {
+      const results = options
+        .map((option, index) => `${option}: ${votes[index]} votes`)
+        .join('\n');
+      pollMessage.edit({
+        content: `**${question}**\n\nPoll closed! Results:\n${results}`,
+        components: [],
+      });
+    });
   }
 }
