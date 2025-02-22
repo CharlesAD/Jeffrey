@@ -37,4 +37,26 @@ module.exports = async function ensureRolesForGuild(guild) {
   } else {
     console.log("Student role already exists.");
   }
+
+  // Assign Student role to any unassigned users (excluding bots)
+  try {
+    // Fetch all members of the guild
+    const members = await guild.members.fetch();
+    members.forEach(async member => {
+      // Skip bots
+      if (member.user.bot) return;
+
+      // If the member doesn't have either the Student or Staff role, assign Student
+      if (!member.roles.cache.has(studentRole.id) && !member.roles.cache.has(staffRole.id)) {
+        try {
+          await member.roles.add(studentRole);
+          console.log(`Assigned Student role to ${member.user.tag}`);
+        } catch (error) {
+          console.error(`Failed to assign Student role to ${member.user.tag}:`, error);
+        }
+      }
+    });
+  } catch (error) {
+    console.error("Error fetching guild members:", error);
+  }
 };
