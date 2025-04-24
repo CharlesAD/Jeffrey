@@ -24,25 +24,19 @@ const studentButtons = new ActionRowBuilder()
 // Buttons for staff
 const staffButtons = new ActionRowBuilder().addComponents(
     new ButtonBuilder()
-        .setCustomId('queue-admins')
-        .setLabel('Manage Admins')
-        .setStyle(ButtonStyle.Secondary), 
+      .setCustomId('queue-blacklist')   // opens selector; switch has a case for this
+      .setLabel('Blacklist Users')
+      .setStyle(ButtonStyle.Danger),
+  
     new ButtonBuilder()
-        .setCustomId('queue-blacklist')
-        .setLabel('Blacklist Users')
-        .setStyle(ButtonStyle.Danger),
+      .setCustomId('clear-queue')       // matches switch 'clear-queue'
+      .setLabel('Clear Queue')
+      .setStyle(ButtonStyle.Secondary),
+  
     new ButtonBuilder()
-        .setCustomId('queue-whitelist')
-        .setLabel('Whitelist Users')
-        .setStyle(ButtonStyle.Success),
-    new ButtonBuilder()
-        .setCustomId('queue-clear')
-        .setLabel('Clear Queues')
-        .setStyle(ButtonStyle.Danger),
-    new ButtonBuilder()
-        .setCustomId('queue-shuffle')
-        .setLabel('Shuffle Queues')
-        .setStyle(ButtonStyle.Primary)
-);
+      .setCustomId('shuffle-queue')     // matches switch 'shuffle-queue'
+      .setLabel('Shuffle Queue')
+      .setStyle(ButtonStyle.Primary)
+  );
 
 module.exports = { studentButtons, staffButtons };

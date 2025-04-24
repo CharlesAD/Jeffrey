@@ -4,8 +4,24 @@ require('dotenv').config();
 const fs = require('fs');
 const path = require('path');
 const { studentButtons, staffButtons } = require('./features/queueButtons');
-const { handleJoinQueue, handleLeaveQueue, handleViewPositions, handleShowQueues, handleClearQueues, handleShuffleQueues, } = require('./queueOperations');
-
+const {
+  handleJoinQueue,
+  handleLeaveQueue,
+  handleJoinStaffQueue,
+  handleLeaveStaffQueue,
+  handleStudentQueueSelect,
+  handleStaffQueueSelect,
+  handleCreateQueueModal,
+  handleEditQueue,
+  handleEditQueueModal,
+  handleShuffleQueue,
+  handleClearQueue,
+  handleBlacklistSelect,
+  handleBlacklistButton,
+  handleDeleteUserButton,
+  handleDeleteUserSelect
+} = require('./queueOperations');
+  
 const { ACCESS_TOKEN_DISCORD, CLIENT_ID } = process.env;
 
 const ensureRolesForGuild = require('./ensureRoles.js');
@@ -14,6 +30,8 @@ const handleCodeReview = require('./features/codeReview');
 const handleDMResponse = require('./features/dmResponse');
 const handleGeneralQuestion = require('./features/generalQuestion');
 const queueManager = require('./queueManager');
+const { setupStudentQueueChannel, setupStaffQueueChannel } = queueManager;
+const { activeQueue } = queueManager;   // use the shared map from queueManager
 
 const clientDB = require('./database');
 
@@ -191,6 +209,11 @@ client.once('ready', async () => {
     // For each guild the bot is in, ensure roles and refresh channels
     for (const [_, guild] of client.guilds.cache) {
         await ensureRolesForGuild(guild);
+        // Sync roles for all current members so they all get the Students role if applicable
+        const allMembers = await guild.members.fetch();
+        for (const member of allMembers.values()) {
+          await assignRolesToMember(member);
+        }
         await refreshChannels(guild);
     }
 });
@@ -289,8 +312,8 @@ async function ensureStudentQueueChannel(guild) {
         }
 
         // Post or update the channel with the student queue message
-        await setupStudentQueueChannel(studentQueueChannel);
-        return studentQueueChannel;
+        await queueManager.setupStudentQueueChannel(studentQueueChannel);
+            return studentQueueChannel;
     } catch (error) {
         console.error(`Failed to ensure "student-queues" channel for ${guild.name}:`, error);
     }
@@ -334,101 +357,30 @@ async function ensureStaffQueueChannel(guild) {
         }
 
         // Post or update the channel with the staff queue message
-        await setupStaffQueueChannel(staffQueueChannel);
-        return staffQueueChannel;
+        await queueManager.setupStaffQueueChannel(staffQueueChannel);
+            return staffQueueChannel;
     } catch (error) {
         console.error(`Failed to ensure "staff-queues" channel for ${guild.name}:`, error);
     }
 }
 
-async function setupStudentQueueChannel(studentQueueChannel) {
-    try {
-        // Retrieve the current student queue for the guild.
-        // Assumes 'queueManager.getQueue' returns an array of user IDs.
-        const studentQueue = await queueManager.getQueue('studentQueue', studentQueueChannel.guild.id);
-        let queueDescription = 'Queue is currently empty.';
-        if (studentQueue && studentQueue.length > 0) {
-            queueDescription = studentQueue
-                .map((user, index) => `${index + 1}. <@${user}>`)
-                .join('\n');
-        }
 
-        const studentEmbed = new EmbedBuilder()
-            .setTitle('Queue Options for Students')
-            .setDescription(`Use these buttons to interact with the queues.\n\n**Current Queue:**\n${queueDescription}`)
-            .setColor('#0000FF'); // Example: Blue
 
-        // Fetch pinned messages in the student-queues channel
-        const pinnedMessages = await studentQueueChannel.messages.fetchPinned();
-        const existingMessage = pinnedMessages.find(msg =>
-            msg.embeds[0]?.title === 'Queue Options for Students'
-        );
-
-        if (existingMessage) {
-            // Update the existing message with the new embed
-            await existingMessage.edit({
-                embeds: [studentEmbed],
-                components: [studentButtons],
-            });
-            console.log(`Updated existing pinned message in "student-queues" (${studentQueueChannel.id})`);
-        } else {
-            // Send a new message if none exists and pin it
-            const studentMessage = await studentQueueChannel.send({
-                embeds: [studentEmbed],
-                components: [studentButtons],
-            });
-            await studentMessage.pin();
-            console.log(`Pinned queue options in the "student-queues" channel (${studentQueueChannel.id})`);
-        }
-    } catch (error) {
-        console.error(`Failed to set up student-queues channel (${studentQueueChannel.id}):`, error);
-    }
-}
-
-async function setupStaffQueueChannel(staffQueueChannel) {
-    try {
-        const staffQueue = await queueManager.getQueue('studentQueue', staffQueueChannel.guild.id);
-        const queueList = staffQueue.length ? staffQueue.map((user, index) => `${index + 1}. ${user}`).join('\n') : 'Empty';
-
-        const staffEmbed = new EmbedBuilder()
-            .setTitle('Queue Management for Staff')
-            .setDescription(`**Current Staff Queue:**\n${queueList}\n\nStaff tools for managing queues.`)
-            .setColor('#FF0000'); // Example: Red
-
-        // Fetch pinned messages
-        const pinnedMessages = await staffQueueChannel.messages.fetchPinned();
-        const existingMessage = pinnedMessages.find(msg =>
-            msg.embeds[0]?.title === 'Queue Management for Staff'
-        );
-
-        if (existingMessage) {
-            // Update the existing message if found
-            await existingMessage.edit({
-                embeds: [staffEmbed],
-                components: [staffButtons],
-            });
-            console.log(`Updated existing pinned message in "staff-queues" (${staffQueueChannel.id})`);
-        } else {
-            // Send a new message if none exists
-            const staffMessage = await staffQueueChannel.send({
-                embeds: [staffEmbed],
-                components: [staffButtons],
-            });
-
-            // Pin the new message
-            await staffMessage.pin();
-            console.log(`Pinned queue options in the "staff-queues" channel (${staffQueueChannel.id})`);
-        }
-    } catch (error) {
-        console.error(`Failed to set up staff-queues channel (${staffQueueChannel.id}):`, error);
-    }
-}
 
 /**
  * Handle button interactions in the queue channel.
  */
 client.on('interactionCreate', async (interaction) => {
-    if (!interaction.isButton()) return;
+    if (interaction.isModalSubmit() && interaction.customId === 'create-queue-modal') {
+      await handleCreateQueueModal(interaction);
+      return;
+    }
+    if (interaction.customId.startsWith('edit-queue-modal-')) {
+        await handleEditQueueModal(interaction);
+        return;
+        }
+    
+    if (!interaction.isButton() && !interaction.isStringSelectMenu()) return;
 
     console.log(`Button clicked: ${interaction.customId}`);
 
@@ -438,32 +390,59 @@ client.on('interactionCreate', async (interaction) => {
     const { customId, user, guild } = interaction;
 
     try {
-        // Defer the reply to avoid timeout errors and allow time to respond later
-        await interaction.deferReply({ ephemeral: true });
+        // // Defer the reply to avoid timeout errors and allow time to respond later
+        // await interaction.deferReply({ ephemeral: true });
 
         switch (customId) {
+            /* ---------- Student selectors & buttons ---------- */
+            case 'student-queue-selector':
+                await handleStudentQueueSelect(interaction);
+                break;
             case 'join-student':
                 await handleJoinQueue(interaction, user, guild);
                 break;
             case 'leave-student':
                 await handleLeaveQueue(interaction, user, guild);
                 break;
-            case 'positions':
-                await handleViewPositions(interaction, user, guild);
+          
+            /* ---------- Staff selectors & buttons ---------- */
+            case 'staff-queue-selector':
+                await handleStaffQueueSelect(interaction);
                 break;
-            case 'show':
-                await handleShowQueues(interaction, guild);
+            case 'join-staff':
+                await handleJoinStaffQueue(interaction, user, guild);
                 break;
-            case 'clear':
-                await handleClearQueues(interaction, guild);
+            case 'leave-staff':
+                await handleLeaveStaffQueue(interaction, user, guild);
                 break;
-            case 'shuffle':
-                await handleShuffleQueues(interaction, guild);
+            case 'shuffle-queue':
+                await handleShuffleQueue(interaction);
                 break;
-            default:
-                await interaction.editReply({ content: 'Unknown button interaction.' });
+            case 'clear-queue':
+                await handleClearQueue(interaction);
                 break;
-        }
+            case 'blacklist-selector':
+                await handleBlacklistSelect(interaction);
+                break;
+// (Removed whitelist-selector case)
+            case 'queue-blacklist':
+                await handleBlacklistButton(interaction);
+                break;
+            case 'edit-queue':
+                await handleEditQueue(interaction);
+                break;
+            case 'delete-user-selector':
+                await handleDeleteUserSelect(interaction);
+                break;
+            case 'queue-delete-user':
+                await handleDeleteUserButton(interaction);
+                break;
+
+          /* ---------- Fallback ---------- */
+          default:
+              await interaction.reply({ content: '⛔ Unknown interaction.', ephemeral: true });
+              break;
+          }
     } catch (error) {
         console.error('Error handling interaction:', error);
 
@@ -482,11 +461,32 @@ client.on('interactionCreate', async (interaction) => {
 /**
  * Handle message-based features (code review, DM response, general question).
  */
+
 client.on('messageCreate', async (message) => {
     if (message.author.bot) return;
     await handleCodeReview(message);
     await handleDMResponse(message);
     await handleGeneralQuestion(message);
+});
+
+/**
+ * Ensure student channels exist whenever a student comes online.
+ */
+client.on('presenceUpdate', async (oldPresence, newPresence) => {
+  try {
+    // Only trigger when coming online from offline
+    if ((!oldPresence || oldPresence.status === 'offline') && newPresence.status === 'online') {
+      const member = newPresence.member;
+      // Only for students
+      if (member.roles.cache.some(role => role.name.toLowerCase() === 'students')) {
+        // Re-create or ensure the student-queues channel and student-docs channel
+        await ensureStudentQueueChannel(newPresence.guild);
+        await updateDocumentationMessage(newPresence.guild, 'student-docs', STUDENT_MESSAGE);
+      }
+    }
+  } catch (err) {
+    console.error('Error in presenceUpdate handler:', err);
+  }
 });
 
 client.login(ACCESS_TOKEN_DISCORD);
