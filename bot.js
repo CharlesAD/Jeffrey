@@ -1,6 +1,7 @@
 const {
     Client, GatewayIntentBits, Partials, ChannelType, REST, Routes, EmbedBuilder} = require('discord.js');
 require('dotenv').config();
+const { handleDmMessage } = require('./features/dmHistory');
 const fs = require('fs');
 const path = require('path');
 const { studentButtons, staffButtons } = require('./features/queueButtons');
@@ -19,7 +20,8 @@ const {
   handleBlacklistSelect,
   handleBlacklistButton,
   handleDeleteUserButton,
-  handleDeleteUserSelect
+  handleDeleteUserSelect,
+  handleCreateQueueButton
 } = require('./queueOperations');
   
 const { ACCESS_TOKEN_DISCORD, CLIENT_ID } = process.env;
@@ -34,6 +36,51 @@ const { setupStudentQueueChannel, setupStaffQueueChannel } = queueManager;
 const { activeQueue } = queueManager;   // use the shared map from queueManager
 
 const clientDB = require('./database');
+
+/**
+ * Backfill all past messages from a text channel into Postgres.
+ */
+async function backfillChannel(channel) {
+  let lastId;
+  while (true) {
+    const options = { limit: 100, before: lastId };
+    const messages = await channel.messages.fetch(options);
+    if (!messages.size) break;
+    for (const msg of messages.values()) {
+      if (msg.author.bot) continue;
+      await clientDB.query(
+        `INSERT INTO public_messages
+           (id, guild_id, channel_id, author_id, author_tag, content, ts)
+         VALUES ($1,$2,$3,$4,$5,$6,$7)
+         ON CONFLICT (id) DO NOTHING`,
+        [
+          msg.id,
+          msg.guildId,
+          msg.channelId,
+          msg.author.id,
+          msg.author.tag,
+          msg.content.trim(),
+          msg.createdAt
+        ]
+      );
+    }
+    lastId = messages.last().id;
+    // Pause briefly to respect rate limits
+    await new Promise(res => setTimeout(res, 500));
+  }
+}
+
+/**
+ * Loop through every text channel in the guild and backfill history.
+ */
+async function backfillGuildHistory(guild) {
+  for (const channel of guild.channels.cache.values()) {
+    if (channel.type === ChannelType.GuildText) {
+      console.log(`Backfilling ${guild.name}#${channel.name}`);
+      await backfillChannel(channel);
+    }
+  }
+}
 
 clientDB.query('SELECT NOW()')
     .then(res => console.log(`Database connected. Server time: ${res.rows[0].now}`))
@@ -51,9 +98,22 @@ const STAFF_MESSAGE =
 const STUDENT_MESSAGE =
 "**Welcome to the Student Documentation Channel!**\n\n" +
 "Here’s what you can do with the Jeffrey Bot:\n\n" +
-"**1️⃣ /viewevents** - See upcoming events.\n" +
-"**2️⃣ /askquestion** - Ask staff or mentors a question.\n" +
-"**3️⃣ /resources** - Access helpful resources.\n\n" +
+"## Queue actions\n" +
+"**1️⃣ /viewevents** – See upcoming events.\n" +
+"**2️⃣ /askquestion** – Ask staff or mentors a question.\n" +
+"**3️⃣ /resources** – Access helpful resources.\n\n" +
+"## Conversation‑history queries _(ask these in a DM to Jeffrey)_\n" +
+"• **Who asked about _photosynthesis_?**\n" +
+"• **When was _Jupiter_ last mentioned?**\n" +
+"• **Who said _pasta_ in the chat?**\n" +
+"• **What was the last message in the chat?**\n" +
+"• **What was mentioned yesterday?** (or *last week / last Friday*)\n" +
+"• **What did @Alice say on 2025‑04‑21?**\n" +
+"• **What did we talk about in #general last Friday?**\n" +
+"• **How many messages has @Bob sent in the last 24 hours?**\n" +
+"• **What did we say about _arrays_ between 2025‑04‑01 and 2025‑04‑10?**\n" +
+"• **What was discussed in #help last week?**\n\n" +
+"_Type any of the above (or similar) in a private DM to Jeffrey and you’ll get an instant answer pulled from the server’s chat history._\n\n" +
 "Ask if you need help!";
 
 // Initialise the bot client
@@ -215,6 +275,10 @@ client.once('ready', async () => {
           await assignRolesToMember(member);
         }
         await refreshChannels(guild);
+        // Backfill historical messages for this guild
+        console.log(`Starting backfill for ${guild.name}...`);
+        await backfillGuildHistory(guild);
+        console.log(`Backfill complete for ${guild.name}.`);
     }
 });
 
@@ -382,6 +446,11 @@ client.on('interactionCreate', async (interaction) => {
     
     if (!interaction.isButton() && !interaction.isStringSelectMenu()) return;
 
+    // Let the generalQuestion collector handle these
+    if (interaction.customId === 'yes_private_help' || interaction.customId === 'no_private_help') {
+      return;
+    }
+
     console.log(`Button clicked: ${interaction.customId}`);
 
     // Ignore buttons not related to queue
@@ -437,6 +506,9 @@ client.on('interactionCreate', async (interaction) => {
             case 'queue-delete-user':
                 await handleDeleteUserButton(interaction);
                 break;
+            case 'create-queue':
+                await handleCreateQueueButton(interaction);
+                break;
 
           /* ---------- Fallback ---------- */
           default:
@@ -464,9 +536,40 @@ client.on('interactionCreate', async (interaction) => {
 
 client.on('messageCreate', async (message) => {
     if (message.author.bot) return;
+
+    // If DM channel, handle via natural‐language history lookup
+    if (message.channel.type === ChannelType.DM) {
+      await handleDmMessage(message);
+      return;
+    }
+
+    // Otherwise, existing guild‐message features
     await handleCodeReview(message);
     await handleDMResponse(message);
     await handleGeneralQuestion(message);
+
+    /* ---------- Live message logging ---------- */
+    try {
+      if (message.guild && !message.author.bot) {
+        await clientDB.query(
+          `INSERT INTO public_messages
+             (id, guild_id, channel_id, author_id, author_tag, content, ts)
+           VALUES ($1,$2,$3,$4,$5,$6,$7)
+           ON CONFLICT (id) DO NOTHING`,
+          [
+            message.id,
+            message.guildId,
+            message.channelId,
+            message.author.id,
+            message.author.tag,
+            message.content.trim(),
+            message.createdAt
+          ]
+        );
+      }
+    } catch (err) {
+      console.error('Live‑logging failed:', err);
+    }
 });
 
 /**
@@ -488,5 +591,6 @@ client.on('presenceUpdate', async (oldPresence, newPresence) => {
     console.error('Error in presenceUpdate handler:', err);
   }
 });
+
 
 client.login(ACCESS_TOKEN_DISCORD);

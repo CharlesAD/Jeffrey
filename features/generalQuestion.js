@@ -18,14 +18,20 @@ module.exports = async function handleGeneralQuestion(message) {
 
     collector.on('collect', async (interaction) => {
       if (interaction.customId === "yes_private_help") {
-          await interaction.deferReply({ ephemeral: true });
+          // Acknowledge the button immediately to avoid timing out
+          await interaction.deferUpdate();
+          // Generate the private help message
           const response = await getOpenAIResponse(message.content, 300);
-          //await message.author.send(response);
+          // Send the response via DM
           await interaction.user.send(response);
-          await interaction.editReply({ content: "I've sent you a private response." });
-        } 
-        else if (interaction.customId === "no_private_help") {
-          await interaction.reply({ content: "Okay, no private help will be provided.", ephemeral: true });
+          // Send an ephemeral follow-up confirmation
+          await interaction.followUp({
+            content: "I've sent you a private response.",
+            ephemeral: true
+          });
+      }
+      else if (interaction.customId === "no_private_help") {
+        await interaction.reply({ content: "Okay, no private help will be provided.", ephemeral: true });
       }
     });
   }

@@ -43,13 +43,29 @@ async function handleDeleteUserSelect(interaction) {
   const mentions = interaction.values.map(id => `<@${id}>`).join(', ');
   await interaction.editReply({ content: `🗑️ Removed ${mentions} from **${queueName}**.` });
 }
-const { EmbedBuilder, ModalBuilder, TextInputBuilder, TextInputStyle, ActionRowBuilder } = require('discord.js');
+const { EmbedBuilder, ModalBuilder, TextInputBuilder, TextInputStyle,
+        ActionRowBuilder, ButtonBuilder, ButtonStyle } = require('discord.js');
 
-async function refreshPanels(guild, interaction) {
-  const studentChannel = guild.channels.cache.find(ch => ch.name === 'student-queues');
-  if (studentChannel) await setupStudentQueueChannel(studentChannel);
-  const staffChannel = guild.channels.cache.find(ch => ch.name === 'staff-queues');
-  if (staffChannel) await setupStaffQueueChannel(staffChannel);
+/**
+ * Refresh both the student and staff queue panels for the guild.
+ * Runs the two panel builders in parallel so that the staff view
+ * updates as quickly as the student view.
+ */
+async function refreshPanels(guild) {
+  // DEBUG: comment out if the logs get too noisy.
+  console.log(`[refreshPanels] Updating panels for ${guild.name} (${guild.id})`);
+
+  const studentChannel = guild.channels.cache.find(
+    ch => ch.name === 'student-queues'
+  );
+  const staffChannel = guild.channels.cache.find(
+    ch => ch.name === 'staff-queues'
+  );
+
+  await Promise.all([
+    studentChannel ? setupStudentQueueChannel(studentChannel) : Promise.resolve(),
+    staffChannel ? setupStaffQueueChannel(staffChannel) : Promise.resolve()
+  ]);
 }
 
 /**
@@ -144,7 +160,16 @@ async function handleStaffQueueSelect(interaction) {
   // Rebuild the dropdown to mark the new queue as selected
   const newSelectorRow = buildStaffQueueSelector(queues, queueId);
   const controlRow = interaction.message.components[1];
-  const updatedComponents = [newSelectorRow, controlRow];
+  const createRow  = interaction.message.components.find(row =>
+    row.components.some(c => c.customId === 'create-queue')
+  ) || new ActionRowBuilder().addComponents(
+    new ButtonBuilder()
+      .setCustomId('create-queue')
+      .setLabel('Create Queue')
+      .setStyle(ButtonStyle.Success)
+  );
+
+  const updatedComponents = [newSelectorRow, controlRow, createRow];
   // If blacklist menu was visible, rebuild that too
   if (interaction.message.components.some(row =>
       row.components.some(comp => comp.customId === 'blacklist-selector')
@@ -153,6 +178,38 @@ async function handleStaffQueueSelect(interaction) {
     updatedComponents.push(blacklistRow);
   }
   return interaction.update({ components: updatedComponents });
+}
+
+/**
+ * Show a modal to create a new queue when the “Create Queue” button is pressed.
+ */
+async function handleCreateQueueButton(interaction) {
+  if (!interaction.member.permissions.has('ManageGuild')) {
+    return interaction.reply({ content: '⛔ Staff only.', ephemeral: true });
+  }
+
+  const modal = new ModalBuilder()
+    .setCustomId('create-queue-modal')
+    .setTitle('Create New Queue');
+
+  const nameInput = new TextInputBuilder()
+    .setCustomId('new-queue-name')
+    .setLabel('Queue name')
+    .setStyle(TextInputStyle.Short)
+    .setRequired(true);
+
+  const descInput = new TextInputBuilder()
+    .setCustomId('new-queue-description')
+    .setLabel('Queue description')
+    .setStyle(TextInputStyle.Paragraph)
+    .setRequired(false);
+
+  modal.addComponents(
+    new ActionRowBuilder().addComponents(nameInput),
+    new ActionRowBuilder().addComponents(descInput)
+  );
+
+  await interaction.showModal(modal);
 }
 
 /**
@@ -233,8 +290,8 @@ if (!selectedQueueId) {
         } else {
             await interaction.followUp({ content: replyText, ephemeral: true });
         }
-        // Refresh the pinned queue display.
-        await updateQueueDisplay(guild);
+        // Refresh both the student and staff panels so the staff view stays up‑to‑date.
+        await refreshPanels(guild);
     } catch (error) {
         console.error("Error handling join queue:", error);
         await interaction.reply({ content: "There was an error joining the queue.", ephemeral: true });
@@ -467,30 +524,49 @@ async function handleClearQueue(interaction) {
 }
 
 /**
- * Shuffle the active queue and persist in the database.
+ * Shuffle the active queue and refresh both panels.
  */
 async function handleShuffleQueue(interaction) {
-  const serverId = interaction.guild.id;
+  const { guild } = interaction;
+  const serverId  = guild.id;
+
+  // 1️⃣  ACKNOWLEDGE IMMEDIATELY so the button remains clickable
+  await interaction.deferUpdate();
+
   const queueId = activeQueue.get(serverId);
   if (!queueId) {
-    return interaction.reply({ content: '❗ Please select a queue first using the dropdown menu.', ephemeral: true });
+    return interaction.followUp({
+      content: '❗ Please select a queue first using the dropdown menu.',
+      ephemeral: true
+    });
   }
-  const queuesList = await listQueues(serverId);
-  const queueObj = queuesList.find(q => q.id === queueId);
+
+  // Resolve the queue’s name
+  const queues    = await listQueues(serverId);
+  const queueObj  = queues.find(q => String(q.id) === String(queueId));
   if (!queueObj) {
-    return interaction.reply({ content: '❗ Queue not found.', ephemeral: true });
+    return interaction.followUp({ content: '❗ Queue not found.', ephemeral: true });
   }
   const queueName = queueObj.queue_name;
-  // Shuffle in database
-  await shuffleQueue(serverId, queueName);
-  await interaction.reply({ content: `✅ Queue **${queueName}** has been shuffled.`, ephemeral: true });
-  // Refresh staff panel
-  const { setupStaffQueueChannel, setupStudentQueueChannel } = require('./queueManager');
-  await setupStaffQueueChannel(interaction.channel);
-  // Refresh student panel
-  const studentChannel = interaction.guild.channels.cache.find(ch => ch.name === 'student-queues');
-  if (studentChannel) {
-    await setupStudentQueueChannel(studentChannel);
+
+  try {
+    // 2️⃣  Shuffle in the database
+    await shuffleQueue(serverId, queueName);
+
+    // 3️⃣  One-shot panel refresh (student + staff)
+    await refreshPanels(guild);
+
+    // 4️⃣  Ephemeral confirmation
+    await interaction.followUp({
+      content: `✅ Queue **${queueName}** has been shuffled.`,
+      ephemeral: true
+    });
+  } catch (err) {
+    console.error('Error shuffling queue:', err);
+    await interaction.followUp({
+      content: '❗ There was an error shuffling the queue.',
+      ephemeral: true
+    });
   }
 }
 
@@ -652,5 +728,6 @@ module.exports = {
     handleBlacklistSelect,
     handleBlacklistButton,
     handleDeleteUserButton,
-    handleDeleteUserSelect
+    handleDeleteUserSelect,
+    handleCreateQueueButton
 };

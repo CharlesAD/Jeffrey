@@ -207,6 +207,13 @@ async function setupStaffQueueChannel(staffChannel, includeBlacklist = false) {
             new ButtonBuilder().setCustomId('queue-delete-user').setLabel('Delete User').setStyle(ButtonStyle.Danger),
             new ButtonBuilder().setCustomId('edit-queue').setLabel('Edit queue').setStyle(ButtonStyle.Secondary)
         );
+        // Row with single “Create Queue” button
+        const createRow = new ActionRowBuilder().addComponents(
+          new ButtonBuilder()
+            .setCustomId('create-queue')
+            .setLabel('Create Queue')
+            .setStyle(ButtonStyle.Success)
+        );
         let blacklistRow;
         if (includeBlacklist) {
           blacklistRow = await buildBlacklistSelector(staffChannel.guild, selectedId);
@@ -216,12 +223,21 @@ async function setupStaffQueueChannel(staffChannel, includeBlacklist = false) {
 
         const pinnedAfter = await staffChannel.messages.fetchPinned();
         let finalMsg = pinnedAfter.find(m => m.embeds[0]?.title === 'Queue Management for Staff');
-        const components = [selectorRow, controlRow];
+        const components = [selectorRow, controlRow, createRow];
         if (includeBlacklist) components.push(blacklistRow);
         if (finalMsg) {
           await finalMsg.edit({ embeds: [embed], components });
         } else {
           await (await staffChannel.send({ embeds: [embed], components })).pin();
+        }
+        const allPins = await staffChannel.messages.fetchPinned();
+        for (const msg of allPins.values()) {
+            if (
+                msg.id !== finalMsg.id &&
+                msg.embeds[0]?.title === 'Queue Management for Staff'
+            ) {
+                await msg.unpin().catch(() => null);
+            }
         }
     } catch (err) {
         console.error(`Failed to set up staff-queues channel (${staffChannel.id}):`, err);
