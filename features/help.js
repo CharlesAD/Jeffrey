@@ -1,53 +1,74 @@
-const { SlashCommandBuilder } = require('@discordjs/builders');
-const { EmbedBuilder } = require('discord.js');
+// features/help.js
+// Context-aware /help command
+// Shows either staff-only or student-only instructions based on the caller’s roles.
+// UK English throughout.
+
+const { SlashCommandBuilder, EmbedBuilder } = require('discord.js');
 
 module.exports = {
-    data: new SlashCommandBuilder()
-        .setName('help')
-        .setDescription('Display help documentation for staff or students')
-        .addStringOption(option =>
-            option
-                .setName('type')
-                .setDescription('Type of user')
-                .setRequired(true)
-                .addChoices(
-                    { name: 'Staff', value: 'staff' },
-                    { name: 'Student', value: 'student' }
-                )),
-    async execute(interaction) {
-        const userType = interaction.options.getString('type');
+  data: new SlashCommandBuilder()
+    .setName('help')
+    .setDescription('Display context-aware help documentation')
+    .setDMPermission(true),
 
-        if (userType === 'staff') {
-            const staffEmbed = new EmbedBuilder()
-                .setColor(0x0099ff)
-                .setTitle('Jeffrey Bot Help - Staff')
-                .setDescription('Here are the commands you can use as a staff member:')
-                .addFields(
-                    { name: '/createevent', value: 'Create a new event for the server.' },
-                    { name: '/manageusers', value: 'Manage user permissions and roles.' },
-                    { name: '/staffstats', value: 'View staff-specific statistics.' }
-                )
-                .setFooter({ text: 'For further assistance, contact the server admin.' });
+  async execute(interaction) {
+    // Detect whether we’re in a guild or a DM
+    if (!interaction.guild) {
+      // DM context – send a generic help message
+      const dmEmbed = new EmbedBuilder()
+        .setColor(0x5865F2)
+        .setTitle('Jeffrey Bot Help')
+        .setDescription('Here’s a quick reference you can use in any chat with Jeffrey.')
+        .addFields(
+          { name: '/smart_search', value: 'Search server chat history with natural‑language queries.' },
+          { name: '/help',        value: 'Display this help message.' },
+        )
+        .setFooter({ text: 'Tip: run commands inside a server for role‑specific guidance.' });
 
-            return interaction.reply({ embeds: [staffEmbed], ephemeral: true });
-        } else if (userType === 'student') {
-            const studentEmbed = new EmbedBuilder()
-                .setColor(0x00ff99)
-                .setTitle('Jeffrey Bot Help - Students')
-                .setDescription('Here are the commands you can use as a student:')
-                .addFields(
-                    { name: '/viewevents', value: 'View upcoming events on the server.' },
-                    { name: '/askquestion', value: 'Ask a question to staff or mentors.' },
-                    { name: '/resources', value: 'Get helpful resources and links.' }
-                )
-                .setFooter({ text: 'For further assistance, contact a staff member.' });
+      return interaction.reply({ embeds: [dmEmbed], ephemeral: true });
+    }
 
-            return interaction.reply({ embeds: [studentEmbed], ephemeral: true });
-        } else {
-            return interaction.reply({
-                content: '❌ Invalid user type. Please choose either "staff" or "student".',
-                ephemeral: true,
-            });
-        }
-    },
+    // Guild context
+    const member = interaction.member;
+
+    // Detect roles (case-insensitive)
+    const isStaff   = member.roles.cache.some(r => r.name.toLowerCase() === 'staff');
+    const isStudent = member.roles.cache.some(r => r.name.toLowerCase() === 'students');
+
+    if (isStaff) {
+      const staffEmbed = new EmbedBuilder()
+        .setColor(0x0099ff)
+        .setTitle('Jeffrey Bot Help · Staff')
+        .setDescription('Commands available to staff members')
+        .addFields(
+          { name: '/createevent', value: 'Create a new event for the server.' },
+          { name: '/manageusers', value: 'Manage user permissions and roles.' },
+          { name: '/staffstats',  value: 'View staff-specific statistics.' },
+        )
+        .setFooter({ text: 'For further assistance, contact the server admin.' });
+
+      return interaction.reply({ embeds: [staffEmbed], ephemeral: true });
+    }
+
+    if (isStudent) {
+      const studentEmbed = new EmbedBuilder()
+        .setColor(0x00ff99)
+        .setTitle('Jeffrey Bot Help · Students')
+        .setDescription('Commands available to students')
+        .addFields(
+          { name: '/viewevents',  value: 'View upcoming events on the server.' },
+          { name: '/askquestion', value: 'Ask a question to staff or mentors.' },
+          { name: '/resources',   value: 'Get helpful resources and links.' },
+        )
+        .setFooter({ text: 'For further assistance, contact a staff member.' });
+
+      return interaction.reply({ embeds: [studentEmbed], ephemeral: true });
+    }
+
+    // Fallback for users with neither role
+    return interaction.reply({
+      content: '❌ You don’t appear to have the Staff or Students role.',
+      ephemeral: true,
+    });
+  },
 };

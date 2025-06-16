@@ -1,6 +1,10 @@
 const {
-    Client, GatewayIntentBits, Partials, ChannelType, REST, Routes, EmbedBuilder} = require('discord.js');
+    Client, GatewayIntentBits, Partials, ChannelType, REST, Routes, EmbedBuilder, PermissionsBitField } = require('discord.js');
 require('dotenv').config();
+// Log – and don't crash – if any promise is rejected without a catch
+process.on('unhandledRejection', err => {
+  console.error('Unhandled promise rejection:', err);
+});
 const { handleDmMessage } = require('./features/dmHistory');
 const fs = require('fs');
 const path = require('path');
@@ -44,7 +48,17 @@ async function backfillChannel(channel) {
   let lastId;
   while (true) {
     const options = { limit: 100, before: lastId };
-    const messages = await channel.messages.fetch(options);
+    let messages;
+    try {
+      messages = await channel.messages.fetch(options);
+    } catch (err) {
+      // 50001 = Missing Access → skip this channel and carry on
+      if (err.code === 50001) {
+        console.warn(`Skipping ${channel.guild?.name ?? 'unknown'}#${channel.name} – missing access`);
+        return;
+      }
+      throw err;                     // bubble up anything unexpected
+    }
     if (!messages.size) break;
     for (const msg of messages.values()) {
       if (msg.author.bot) continue;
@@ -103,15 +117,16 @@ const STUDENT_MESSAGE =
 "**2️⃣ /askquestion** – Ask staff or mentors a question.\n" +
 "**3️⃣ /resources** – Access helpful resources.\n\n" +
 "## Conversation‑history queries _(ask these in a DM to Jeffrey)_\n" +
-"• **Who asked about _photosynthesis_?**\n" +
-"• **When was _Jupiter_ last mentioned?**\n" +
-"• **Who said _pasta_ in the chat?**\n" +
+"## Conversation-history queries _(ask these in a DM to Jeffrey)_\n" +
+"• **Who asked about \\\"something\\\" in the chat?**\n" +
+"• **When was \\\"something\\\" last mentioned?**\n" +
+"• **Who said \\\"something\\\" in the chat?**\n" +
 "• **What was the last message in the chat?**\n" +
-"• **What was mentioned yesterday?** (or *last week / last Friday*)\n" +
-"• **What did @Alice say on 2025‑04‑21?**\n" +
+"• **What was mentioned yesterday?** (or last week / last Friday)\n" +
+"• **What did @Alice say on 2025-04-21?**\n" +
 "• **What did we talk about in #general last Friday?**\n" +
 "• **How many messages has @Bob sent in the last 24 hours?**\n" +
-"• **What did we say about _arrays_ between 2025‑04‑01 and 2025‑04‑10?**\n" +
+"• **What did we say about arrays between 2025-04-01 and 2025-04-10?**\n" +
 "• **What was discussed in #help last week?**\n\n" +
 "_Type any of the above (or similar) in a private DM to Jeffrey and you’ll get an instant answer pulled from the server’s chat history._\n\n" +
 "Ask if you need help!";
@@ -128,6 +143,9 @@ const client = new Client({
     partials: [Partials.Channel],
 });
 
+// Map of command objects keyed by their name
+client.commands = new Map();
+
 // Load all slash commands
 const commands = [];
 const commandsPath = path.join(__dirname, 'features');
@@ -137,6 +155,7 @@ for (const file of commandFiles) {
     const command = require(path.join(commandsPath, file));
     if (command.data && command.data.name) {
         commands.push(command.data.toJSON());
+        client.commands.set(command.data.name, command);
     }
 }
 
@@ -262,6 +281,29 @@ client.once('ready', async () => {
         console.log('Registering application (/) commands globally...');
         await rest.put(Routes.applicationCommands(CLIENT_ID), { body: commands });
         console.log('Successfully registered application (/) commands globally.');
+        /* ---------- Auto‑generated invite link ---------- */
+        // Define the permissions your bot absolutely needs. 
+        // Adjust this list if you add/remove features later.
+        const requiredPerms = new PermissionsBitField([
+          PermissionsBitField.Flags.ViewChannel,
+          PermissionsBitField.Flags.ReadMessageHistory,
+          PermissionsBitField.Flags.SendMessages,
+          PermissionsBitField.Flags.ManageRoles,
+          PermissionsBitField.Flags.ManageChannels,
+          PermissionsBitField.Flags.EmbedLinks,
+          PermissionsBitField.Flags.AttachFiles,
+          PermissionsBitField.Flags.AddReactions
+        ]);
+
+        const inviteUrl =
+          `https://discord.com/api/oauth2/authorize` +
+          `?client_id=${CLIENT_ID}` +
+          `&permissions=${requiredPerms.bitfield}` +
+          `&scope=bot%20applications.commands`;
+
+        console.log('\n=== Invite Jeffrey to your server ===');
+        console.log(inviteUrl);
+        console.log('====================================\n');
     } catch (error) {
         console.error('Error registering commands:', error);
     }
@@ -428,21 +470,303 @@ async function ensureStaffQueueChannel(guild) {
     }
 }
 
+/**
+ * Handle the /history slash-command by turning the sub-command + options
+ * into the natural-language question strings already understood by
+ * handleDmMessage(), then piping it through that parser.
+ */
+async function handleHistorySlash(interaction) {
+    // Work out which guild’s history we should search.
+    // • If the command is invoked inside a server channel we already have
+    //   `interaction.guild`.
+    // • If it’s invoked from a DM we attempt to find the *first* guild
+    //   that both the user and the bot share.
+    //   (That’s good enough for single‑server classrooms; for multiple
+    //   mutual servers you may want to add a guild selector later.)
+    let guild = interaction.guild;
+    if (!guild) {
+      for (const g of interaction.client.guilds.cache.values()) {
+        try {
+          await g.members.fetch(interaction.user.id); // throws if user not in guild
+          guild = g;
+          break;
+        } catch (_) {
+          /* not a mutual guild – keep looking */
+        }
+      }
+      if (!guild) {
+        return interaction.reply({
+          content: '⛔ I couldn’t find a server we both belong to. Please invite me to the server and try again.',
+          ephemeral: true,
+        });
+      }
+    }
+    const guildId = guild.id;
+    const sub = interaction.options.getSubcommand();
+    let query;
+  
+    switch (sub) {
+      case 'last_mentioned':
+        query = `When was ${interaction.options.getString('term')} last mentioned?`;
+        break;
+      case 'last_message':
+        query = 'What was the last message in the chat?';
+        break;
+      case 'keyword_between': {
+        const term      = interaction.options.getString('term');
+        const startStr  = interaction.options.getString('start');
+        const endStr    = interaction.options.getString('end');
 
+        // Basic YYYY‑MM‑DD check
+        const startDate = new Date(startStr);
+        const endDate   = new Date(endStr);
+        if (isNaN(startDate) || isNaN(endDate)) {
+          return interaction.reply({
+            content: '⛔ Invalid date format. Please use YYYY‑MM‑DD.',
+            ephemeral: true,
+          });
+        }
+
+        await interaction.deferReply({ ephemeral: true });
+
+        try {
+          // Include the whole end day by adding 24h
+          const { rows } = await clientDB.query(
+            `SELECT author_tag, content, ts
+               FROM public_messages
+              WHERE guild_id = $1
+                AND content ILIKE $2
+                AND ts BETWEEN $3 AND $4
+              ORDER BY ts`,
+            [
+              guildId,
+              '%' + term + '%',
+              startDate,
+              new Date(endDate.getTime() + 24 * 60 * 60 * 1000),
+            ]
+          );
+
+          const count = rows.length;
+          let response =
+            `${term} was mentioned **${count}** time(s) between ` +
+            `${startStr} and ${endStr}.`;
+
+          if (count > 0) {
+            // Show up to the first 10 results
+            const preview = rows.slice(0, 10).map(r =>
+              `• **${r.author_tag}** at <t:${Math.floor(new Date(r.ts).getTime() / 1000)}:f> – ${r.content}`
+            ).join('\n');
+
+            // First / last
+            const firstTs = rows[0].ts;
+            const lastTs  = rows[rows.length - 1].ts;
+
+            response += `\nFirst: <t:${Math.floor(new Date(firstTs).getTime() / 1000)}:f>`;
+            response += `\nLast:  <t:${Math.floor(new Date(lastTs ).getTime() / 1000)}:f>`;
+            response += `\n\n${preview}`;
+            if (count > 10) response += `\n…and **${count - 10}** more.`;
+          } else {
+            response += `\n\n_No matching messages were found in that period._`;
+          }
+
+          await interaction.editReply({ content: response });
+        } catch (err) {
+          console.error('keyword_between query failed:', err);
+          await interaction.editReply({
+            content: 'Sorry, something went wrong fetching that history.',
+          });
+        }
+        return; // handled – skip the generic dmHistory fallback
+      }
+      case 'channel_discussed_period': {
+        // ── 1. Resolve which channel to search ──────────────────────────────
+        let ch = interaction.options.getChannel('channel');
+        if (!ch) {
+          ch =
+            guild.systemChannel ||
+            guild.channels.cache.find(
+              c => c.type === ChannelType.GuildText && c.name === 'general'
+            ) ||
+            guild.channels.cache.find(c => c.type === ChannelType.GuildText);
+        }
+        if (!ch) {
+          return interaction.reply({
+            content: '⛔ I couldn’t find a text channel to search in this server.',
+            ephemeral: true,
+          });
+        }
+
+        // ── 2. Work out time‑window based on period selector ────────────────
+        // periodChoice: "yesterday", "today", "last week"
+        // "last week" means the last 7×24h window, starting 00:00 seven days ago, up to now.
+        const periodChoice = (interaction.options.getString('period') || 'last week').toLowerCase();
+        const now       = new Date();
+        let   startDate = new Date();
+        let   endDate   = new Date();           // defaults to “now”
+
+        switch (periodChoice) {
+          case 'yesterday': {                   // 00:00 → 23:59 of the previous day
+            startDate.setDate(now.getDate() - 1);
+            startDate.setHours(0, 0, 0, 0);
+            endDate = new Date(startDate);
+            endDate.setHours(23, 59, 59, 999);
+            break;
+          }
+          case 'today': {                    // midnight today → now
+            startDate = new Date(now);
+            startDate.setHours(0, 0, 0, 0);
+            // endDate stays as “now”
+            break;
+          }
+          case 'last week': {                   // 7 * 24 hours up to “now”
+            startDate = new Date(now);
+            startDate.setDate(now.getDate() - 7);
+            startDate.setHours(0, 0, 0, 0);     // midnight at start
+            // endDate stays as “now”
+            break;
+          }
+          default: {                            // fallback: last 7 days (not normalized to midnight)
+            startDate = new Date(now);
+            startDate.setDate(now.getDate() - 7);
+            break;
+          }
+        }
+
+        await interaction.deferReply({ ephemeral: true });
+
+        // ── 3. Fetch messages from Postgres ─────────────────────────────────
+        try {
+          const { rows } = await clientDB.query(
+            `SELECT content
+               FROM public_messages
+              WHERE guild_id   = $1
+                AND channel_id = $2
+                AND ts BETWEEN $3 AND $4`,
+            [guildId, ch.id, startDate, endDate]
+          );
+
+          if (!rows.length) {
+            return interaction.editReply({
+              content: `Nothing was posted in #${ch.name} during that period.`,
+            });
+          }
+
+          // ── 4. Tiny summary: top 5 keywords (excluding stop‑words) ───────
+          const stop = new Set([
+            'the','and','a','an','to','of','in','it','is','for','on','that',
+            'this','with','i','you','we','they','he','she','at','by','be',
+            'was','were','are','from','as','but','or','if','so','not','have',
+            'has','had','our','your','my','me'
+          ]);
+          const counts = {};
+          for (const r of rows) {
+            for (const word of r.content
+              .toLowerCase()
+              .replace(/[`*_~>|<@\d:,.\-?!()\[\]{}]/g, ' ')
+              .split(/\s+/)
+            ) {
+              if (word.length < 3 || stop.has(word)) continue;
+              counts[word] = (counts[word] || 0) + 1;
+            }
+          }
+
+          const topics = Object.entries(counts)
+            .sort((a, b) => b[1] - a[1])
+            .slice(0, 5)
+            .map(([w]) => w);
+
+          // Helper to join words nicely: "a, b and c"
+          const humanList = arr => {
+            if (arr.length === 0) return '';
+            if (arr.length === 1) return arr[0];
+            if (arr.length === 2) return `${arr[0]} and ${arr[1]}`;
+            return `${arr.slice(0, -1).join(', ')}, and ${arr[arr.length - 1]}`;
+          };
+
+          const summary =
+            topics.length
+              ? `During this period the conversation mainly revolved around **${humanList(topics)}**.`
+              : 'Messages were too varied for a clear one‑sentence summary.';
+
+          // ── 5. Craft the response ────────────────────────────────────────
+          await interaction.editReply({
+            content:
+              `I found **${rows.length}** messages in <#${ch.id}> ` +
+              `between <t:${Math.floor(startDate.getTime() / 1000)}:d> ` +
+              `and <t:${Math.floor(endDate.getTime()   / 1000)}:d>.\n` +
+              summary
+          });
+        } catch (err) {
+          console.error('channel_discussed_period query failed:', err);
+          await interaction.editReply({
+            content: 'Sorry, something went wrong fetching that history.',
+          });
+        }
+        return; // handled – skip the dmHistory fallback
+      }
+      default:
+        return interaction.reply({ content: '⛔ Unknown history query.', ephemeral: true });
+    }
+  
+    await interaction.deferReply({ ephemeral: true });
+  
+    // Lightweight stub satisfying dmHistory expectations
+    const fakeMsg = {
+      content: query,
+      client: interaction.client,
+      reply: (content) => interaction.followUp({ content, ephemeral: true })
+    };
+  
+    try {
+      await handleDmMessage(fakeMsg);
+    } catch (err) {
+      console.error('History slash command failed:', err);
+      await interaction.followUp({ content: 'Sorry, something went wrong.', ephemeral: true });
+    }
+  }
 
 
 /**
  * Handle button interactions in the queue channel.
  */
 client.on('interactionCreate', async (interaction) => {
-    if (interaction.isModalSubmit() && interaction.customId === 'create-queue-modal') {
-      await handleCreateQueueModal(interaction);
-      return;
+
+    // ─── Slash commands ────────────────────────────────
+    if (interaction.isChatInputCommand()) {
+        // /smart_search is implemented as a bespoke handler
+        if (interaction.commandName === 'smart_search') {
+            await handleHistorySlash(interaction);
+            return;
+        }
+
+        // All other slash commands loaded from /features
+        const command = interaction.client.commands.get(interaction.commandName);
+        if (!command) {
+            await interaction.reply({ content: '⛔ Unknown command.', ephemeral: true });
+            return;
+        }
+
+        try {
+            await command.execute(interaction);
+        } catch (err) {
+            console.error(`Error running /${interaction.commandName}:`, err);
+            if (interaction.deferred || interaction.replied) {
+                await interaction.followUp({ content: 'Sorry, something went wrong.', ephemeral: true });
+            } else {
+                await interaction.reply({ content: 'Sorry, something went wrong.', ephemeral: true });
+            }
+        }
+        return; // done with slash commands
     }
-    if (interaction.customId.startsWith('edit-queue-modal-')) {
+
+    if (interaction.isModalSubmit() && interaction.customId === 'create-queue-modal') {
+        await handleCreateQueueModal(interaction);
+        return;
+    }
+    if (interaction.isModalSubmit() && interaction.customId?.startsWith('edit-queue-modal-')) {
         await handleEditQueueModal(interaction);
         return;
-        }
+    }
     
     if (!interaction.isButton() && !interaction.isStringSelectMenu()) return;
 
