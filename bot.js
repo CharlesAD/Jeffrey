@@ -774,6 +774,10 @@ client.on('interactionCreate', async (interaction) => {
     if (interaction.customId === 'yes_private_help' || interaction.customId === 'no_private_help') {
       return;
     }
+    // Let the codeReview collector handle these
+    if (interaction.customId === 'code_review_yes' || interaction.customId === 'code_review_no') {
+      return;
+    }
 
     console.log(`Button clicked: ${interaction.customId}`);
 
