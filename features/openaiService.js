@@ -1,8 +1,8 @@
 // features/openaiService.js
 const OpenAI = require("openai");
-const { ACCESS_TOKEN_OPENAI } = process.env;
+const { OPENAI_API_KEY } = process.env;
 
-const openai = new OpenAI({ apiKey: ACCESS_TOKEN_OPENAI });
+const openai = new OpenAI({ apiKey: OPENAI_API_KEY });
 
 let log = [{ role: "system", content: "You are a general friendly assistant who is knowledgeable about code." }];
 
