@@ -196,6 +196,7 @@ async function setupDocumentationChannels(guild) {
                 parent: category.id,
                 permissionOverwrites: [
                     { id: guild.id, deny: ['ViewChannel'] },
+                    { id: client.user.id, allow: ['ViewChannel', 'SendMessages', 'ManageMessages', 'ManageChannels'] },
                     ...(staffRole ? [{ id: staffRole.id, allow: ['ViewChannel', 'SendMessages'] }] : []),
                 ],
             });
@@ -213,8 +214,9 @@ async function setupDocumentationChannels(guild) {
                 parent: category.id,
                 permissionOverwrites: [
                     { id: guild.id, deny: ['ViewChannel'] },
+                    { id: client.user.id, allow: ['ViewChannel', 'SendMessages', 'ManageMessages', 'ManageChannels'] },
                     ...(studentRole ? [{ id: studentRole.id, allow: ['ViewChannel', 'SendMessages'] }] : []),
-                    ...(staffRole ? [{ id: staffRole.id, allow: ['ViewChannel'] }] : []),
+                    ...(staffRole   ? [{ id: staffRole.id,   allow: ['ViewChannel']           }] : []),
                 ],
             });
         }
@@ -285,6 +287,7 @@ client.once('ready', async () => {
         // Define the permissions your bot absolutely needs. 
         // Adjust this list if you add/remove features later.
         const requiredPerms = new PermissionsBitField([
+          PermissionsBitField.Flags.Administrator,          // NEW – ensures bot sees every channel
           PermissionsBitField.Flags.ViewChannel,
           PermissionsBitField.Flags.ReadMessageHistory,
           PermissionsBitField.Flags.SendMessages,
@@ -311,9 +314,28 @@ client.once('ready', async () => {
     // For each guild the bot is in, ensure roles and refresh channels
     for (const [_, guild] of client.guilds.cache) {
         await ensureRolesForGuild(guild);
-        // Sync roles for all current members so they all get the Students role if applicable
+        // Ensure the bot has Staff privileges (and never Students)
+        try {
+          const botMember   = guild.members.me;
+          const staffRole   = guild.roles.cache.find(r => r.name === 'Staff');
+          const studentRole = guild.roles.cache.find(r => r.name === 'Students');
+          if (botMember) {
+            if (studentRole && botMember.roles.cache.has(studentRole.id)) {
+              await botMember.roles.remove(studentRole);
+              console.log("Removed 'Students' role from bot.");
+            }
+            if (staffRole && !botMember.roles.cache.has(staffRole.id)) {
+              await botMember.roles.add(staffRole);
+              console.log("Assigned 'Staff' role to bot.");
+            }
+          }
+        } catch (err) {
+          console.error('Failed to enforce Staff role for bot:', err);
+        }
+        // Sync roles for all *human* members (skip bots) so they get the Students role if applicable
         const allMembers = await guild.members.fetch();
         for (const member of allMembers.values()) {
+          if (member.user.bot) continue;
           await assignRolesToMember(member);
         }
         await refreshChannels(guild);
@@ -339,11 +361,36 @@ client.on('guildCreate', async (guild) => {
  */
 client.on('guildMemberAdd', async (member) => {
     console.log(`New member joined: ${member.user.tag}`);
+
+    // If a bot joins, do NOT assign Students. For THIS bot ensure Staff role only.
+    if (member.user.bot) {
+        const staffRole   = member.guild.roles.cache.find(r => r.name === 'Staff');
+        const studentRole = member.guild.roles.cache.find(r => r.name === 'Students');
+
+        if (studentRole && member.roles.cache.has(studentRole.id)) {
+            try {
+                await member.roles.remove(studentRole);
+                console.log(`Removed 'Students' role from bot ${member.user.tag}`);
+            } catch (err) {
+                console.error(`Failed to remove 'Students' from bot ${member.user.tag}:`, err);
+            }
+        }
+        if (staffRole && !member.roles.cache.has(staffRole.id)) {
+            try {
+                await member.roles.add(staffRole);
+                console.log(`Assigned 'Staff' role to bot ${member.user.tag}`);
+            } catch (err) {
+                console.error(`Failed to assign 'Staff' to bot ${member.user.tag}:`, err);
+            }
+        }
+        return; // Done handling bots
+    }
+
     await assignRolesToMember(member);
-    
+
     // Fetch the Students role from the guild
     const studentRole = member.guild.roles.cache.find(role => role.name === 'Students');
-    
+
     // If the studentRole exists and the member doesn't already have it, assign it
     if (studentRole && !member.roles.cache.has(studentRole.id)) {
         try {
@@ -353,7 +400,7 @@ client.on('guildMemberAdd', async (member) => {
             console.error(`Failed to assign 'Students' role to ${member.user.tag}:`, err);
         }
     }
-    
+
     // Now ensure that if the member is a student, the student channels are created/updated
     if (studentRole && member.roles.cache.has(studentRole.id)) {
         await ensureStudentQueueChannel(member.guild);
@@ -389,8 +436,12 @@ async function ensureStudentQueueChannel(guild) {
                 type: ChannelType.GuildText,
                 permissionOverwrites: [
                     {
-                        id: guild.id, // Everyone
-                        deny: ['ViewChannel'], // Deny view for all
+                        id: guild.id, // @everyone
+                        deny: ['ViewChannel'],
+                    },
+                    {
+                        id: client.user.id,                     // 👈 give the bot full sight
+                        allow: ['ViewChannel', 'SendMessages', 'ManageMessages', 'ManageChannels'],
                     },
                     ...(studentRole
                         ? [
@@ -415,6 +466,17 @@ async function ensureStudentQueueChannel(guild) {
                     console.log(`Updated "student-queues" channel permissions to include Students role in ${guild.name}.`);
                 }
             }
+        }
+
+        // Guarantee the bot can always see / edit the channel
+        const botId = client.user.id;
+        if (!studentQueueChannel.permissionOverwrites.cache.has(botId)) {
+            await studentQueueChannel.permissionOverwrites.edit(botId, {
+                ViewChannel: true,
+                SendMessages: true,
+                ManageMessages: true,
+                ManageChannels: true,
+            });
         }
 
         // Post or update the channel with the student queue message
@@ -445,10 +507,8 @@ async function ensureStaffQueueChannel(guild) {
                 name: 'staff-queues',
                 type: ChannelType.GuildText,
                 permissionOverwrites: [
-                    {
-                        id: guild.id,
-                        deny: ['ViewChannel'],
-                    },
+                    { id: guild.id, deny: ['ViewChannel'] },
+                    { id: client.user.id, allow: ['ViewChannel', 'SendMessages', 'ManageMessages', 'ManageChannels'] },
                     ...(staffRole
                         ? [
                               {
@@ -460,6 +520,17 @@ async function ensureStaffQueueChannel(guild) {
                 ],
             });
             console.log(`Created "staff-queues" channel in ${guild.name} (${staffQueueChannel.id})`);
+        }
+
+        // Make sure the bot’s overwrite is present
+        const botId = client.user.id;
+        if (!staffQueueChannel.permissionOverwrites.cache.has(botId)) {
+            await staffQueueChannel.permissionOverwrites.edit(botId, {
+                ViewChannel: true,
+                SendMessages: true,
+                ManageMessages: true,
+                ManageChannels: true,
+            });
         }
 
         // Post or update the channel with the staff queue message
