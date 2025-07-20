@@ -74,7 +74,7 @@ const completion = await openai.chat.completions.create({
 });
 
 // Sent code review to DMs
-message.author.send(completion.choices[0].message.content); //code review Response is logged to channel
+message.author.send(completion.choices[0].message.content); // code review response is sent via DM, not logged to the channel
 log.push({role: "system", content: completion.choices[0].message.content}) // code review is logged in conversation
 
     }
