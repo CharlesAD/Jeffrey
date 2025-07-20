@@ -16,5 +16,15 @@ client.connect()
     .then(() => console.log('Connected to PostgreSQL'))
     .catch(err => console.error('Database connection error:', err));
 
+function shutdown() {
+    client.end()
+        .then(() => console.log('PostgreSQL client disconnected'))
+        .catch(err => console.error('Error during PostgreSQL disconnect:', err))
+        .finally(() => process.exit(0));
+}
+
+process.once('SIGINT', shutdown);
+process.once('SIGTERM', shutdown);
+
 // Export the client for use in other parts of your bot
 module.exports = client;
